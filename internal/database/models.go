@@ -10,9 +10,18 @@ import (
 	"github.com/google/uuid"
 )
 
-type User struct {
+type Chirp struct {
 	ID        uuid.UUID
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	Email     string
+	Body      string
+	UserID    uuid.NullUUID
+}
+
+type User struct {
+	ID             uuid.UUID
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Email          string
+	HashedPassword string
 }

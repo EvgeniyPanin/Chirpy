@@ -4,19 +4,41 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/EvgeniyPanin/Chirpy/internal/database"
+	"github.com/EvgeniyPanin/Chirpy/internal/database/auth"
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
+type Chirp struct {
+	ID        uuid.UUID     `json:"id"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
+	Body      string        `json:"body"`
+	UserID    uuid.NullUUID `json:"user_id"`
+}
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
+	platform       string
 }
 
 func (this *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -32,17 +54,162 @@ func (this *apiConfig) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "<html><body><h1>Welcome, Chirpy Admin</h1><p>Chirpy has been visited %d times!</p></body></html>", this.fileserverHits.Load())
 }
 
-func (this *apiConfig) resetMetrics(w http.ResponseWriter, r *http.Request) {
+func (this *apiConfig) reset(w http.ResponseWriter, r *http.Request) {
+	if this.platform != "dev" {
+		respondWithError(w, http.StatusForbidden, fmt.Sprintf("Frobidden on the plstform %s", this.platform))
+	}
 	w.WriteHeader(http.StatusOK)
 	this.fileserverHits.Store(0)
+	err := this.dbQueries.DeleteUsers(r.Context())
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+	}
+}
+
+func (this *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
+	type payload struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	d := json.NewDecoder(r.Body)
+	params := payload{}
+	err := d.Decode(&params)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(params.Password)
+
+	if err != nil {
+		http.Error(w, "Something went wrong", http.StatusBadRequest)
+	}
+
+	dbUser, err := this.dbQueries.CreateUser(
+		r.Context(),
+		database.CreateUserParams{Email: params.Email, HashedPassword: hashedPassword},
+	)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create user")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, dbUserToUser(dbUser))
+}
+func (this *apiConfig) login(w http.ResponseWriter, r *http.Request) {
+	type payload struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	d := json.NewDecoder(r.Body)
+	params := payload{}
+	err := d.Decode(&params)
+
+	if err != nil {
+		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
+		return
+	}
+
+	dbUser, err := this.dbQueries.GetUser(r.Context(), params.Email)
+
+	if err != nil {
+		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
+		return
+	}
+
+	ok, err := auth.CheckPasswordHash(params.Password, dbUser.HashedPassword)
+
+	if err != nil || !ok {
+		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, dbUserToUser(dbUser))
+}
+
+func (this *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
+	type payload struct {
+		Body   string        `json:"body"`
+		UserID uuid.NullUUID `json:"user_id"`
+	}
+
+	d := json.NewDecoder(r.Body)
+	params := payload{}
+	err := d.Decode(&params)
+
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if len(params.Body) > 140 {
+		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
+		return
+	}
+
+	dbChirp, err := this.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams{Body: cleanPhrase(params.Body), UserID: params.UserID})
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, dbChirpToChirp(dbChirp))
+}
+
+func (this *apiConfig) listChirps(w http.ResponseWriter, r *http.Request) {
+	dbChirps, err := this.dbQueries.ListChirps(r.Context())
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	res := []Chirp{}
+
+	for _, dbChirp := range dbChirps {
+		res = append(res, dbChirpToChirp(dbChirp))
+	}
+
+	respondWithJSON(w, http.StatusOK, res)
+}
+
+func (this *apiConfig) getChirp(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("chirpID"))
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	dbChirp, err := this.dbQueries.GetChirp(r.Context(), id)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, dbChirpToChirp(dbChirp))
 }
 
 func main() {
+	godotenv.Load()
+
 	dbURL := os.Getenv("DB_URL")
-	db, _ := sql.Open("postgres", dbURL)
+	db, err := sql.Open("postgres", dbURL)
+
+	if err != nil {
+		log.Fatal("Couldn't connect to database", err)
+	}
+
 	dbQueries := database.New(db)
 
-	config := apiConfig{dbQueries: dbQueries}
+	config := apiConfig{dbQueries: dbQueries, platform: os.Getenv("PLATFORM")}
 
 	mux := http.NewServeMux()
 	fs := http.FileServer(http.Dir("."))
@@ -55,30 +222,15 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 
-	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
-		type payload struct {
-			Body string `json:"body"`
-		}
+	mux.HandleFunc("POST /api/users", http.HandlerFunc(config.createUser))
+	mux.HandleFunc("POST /api/login", http.HandlerFunc(config.login))
 
-		d := json.NewDecoder(r.Body)
-		params := payload{}
-		err := d.Decode(&params)
-
-		if err != nil {
-			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
-			return
-		}
-
-		if len(params.Body) > 140 {
-			respondWithError(w, http.StatusBadRequest, "Chirp is too long")
-			return
-		}
-
-		respondWithJSON(w, http.StatusOK, map[string]string{"cleaned_body": cleanPhrase(params.Body)})
-	})
+	mux.HandleFunc("POST /api/chirps", http.HandlerFunc(config.postChirp))
+	mux.HandleFunc("GET /api/chirps", http.HandlerFunc(config.listChirps))
+	mux.HandleFunc("GET /api/chirps/{chirpID}", http.HandlerFunc(config.getChirp))
 
 	mux.Handle("GET /admin/metrics", http.HandlerFunc(config.handleMetrics))
-	mux.Handle("POST /admin/reset", http.HandlerFunc(config.resetMetrics))
+	mux.Handle("POST /admin/reset", http.HandlerFunc(config.reset))
 
 	http.ListenAndServe(":8080", mux)
 }
@@ -114,4 +266,23 @@ func cleanPhrase(s string) string {
 	}
 
 	return strings.Join(res, " ")
+}
+
+func dbUserToUser(dbUser database.User) User {
+	return User{
+		ID:        dbUser.ID,
+		CreatedAt: dbUser.CreatedAt,
+		UpdatedAt: dbUser.UpdatedAt,
+		Email:     dbUser.Email,
+	}
+}
+
+func dbChirpToChirp(dbChirp database.Chirp) Chirp {
+	return Chirp{
+		ID:        dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+		Body:      dbChirp.Body,
+		UserID:    dbChirp.UserID,
+	}
 }
