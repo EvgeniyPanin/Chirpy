@@ -42,18 +42,18 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 
 	token, err := jwt.ParseWithClaims(tokenString, &claims, func(t *jwt.Token) (any, error) {
 		if t.Method.Alg() != "HS256" {
-			return nil, errors.New("Invalid signing methoud")
+			return nil, errors.New("invalid signing method")
 		}
 
 		return []byte(tokenSecret), nil
 	})
 
-	if !token.Valid {
-		return uuid.Nil, errors.New("Invalid token")
-	}
-
 	if err != nil {
 		return uuid.Nil, err
+	}
+
+	if !token.Valid {
+		return uuid.Nil, errors.New("invalid token")
 	}
 
 	userId, err := token.Claims.GetSubject()
