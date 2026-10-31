@@ -21,11 +21,12 @@ import (
 )
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token,omitempty"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 type Chirp struct {
@@ -102,13 +103,12 @@ func (this *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondWithJSON(w, http.StatusCreated, dbUserToUser(dbUser, ""))
+	respondWithJSON(w, http.StatusCreated, dbUserToUser(dbUser, "", ""))
 }
 func (this *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 	type payload struct {
-		Email            string `json:"email"`
-		Password         string `json:"password"`
-		ExpiresInSeconds int    `json:"expires_in_seconds"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	d := json.NewDecoder(r.Body)
@@ -118,10 +118,6 @@ func (this *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
 		return
-	}
-
-	if params.ExpiresInSeconds == 0 || params.ExpiresInSeconds > DEFAULT_JWT_EXPIRATION_TIME {
-		params.ExpiresInSeconds = DEFAULT_JWT_EXPIRATION_TIME
 	}
 
 	dbUser, err := this.dbQueries.GetUser(r.Context(), params.Email)
@@ -138,14 +134,27 @@ func (this *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.MakeJWT(dbUser.ID, this.jwtSecret, time.Duration(params.ExpiresInSeconds*int(time.Second)))
+	token, err := auth.MakeJWT(dbUser.ID, this.jwtSecret, time.Duration(DEFAULT_JWT_EXPIRATION_TIME*int(time.Second)))
 
 	if err != nil {
 		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, dbUserToUser(dbUser, token))
+	refreshToken := auth.MakeRefreshToken()
+
+	_, err = this.dbQueries.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+		Token:     refreshToken,
+		UserID:    uuid.NullUUID{UUID: dbUser.ID, Valid: true},
+		ExpiresAt: time.Now().Add(60 * 24 * time.Hour),
+	})
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create refresh token")
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, dbUserToUser(dbUser, token, refreshToken))
 }
 
 func (this *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
@@ -297,13 +306,14 @@ func cleanPhrase(s string) string {
 	return strings.Join(res, " ")
 }
 
-func dbUserToUser(dbUser database.User, token string) User {
+func dbUserToUser(dbUser database.User, token string, refreshToken string) User {
 	return User{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
-		Token:     token,
+		ID:           dbUser.ID,
+		CreatedAt:    dbUser.CreatedAt,
+		UpdatedAt:    dbUser.UpdatedAt,
+		Email:        dbUser.Email,
+		Token:        token,
+		RefreshToken: refreshToken,
 	}
 }
 
