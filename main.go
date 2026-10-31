@@ -25,6 +25,7 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token,omitempty"`
 }
 
 type Chirp struct {
@@ -39,7 +40,10 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	platform       string
+	jwtSecret      string
 }
+
+const DEFAULT_JWT_EXPIRATION_TIME = 3600
 
 func (this *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,12 +102,13 @@ func (this *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondWithJSON(w, http.StatusCreated, dbUserToUser(dbUser))
+	respondWithJSON(w, http.StatusCreated, dbUserToUser(dbUser, ""))
 }
 func (this *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 	type payload struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		ExpiresInSeconds int    `json:"expires_in_seconds"`
 	}
 
 	d := json.NewDecoder(r.Body)
@@ -113,6 +118,10 @@ func (this *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
 		return
+	}
+
+	if params.ExpiresInSeconds == 0 || params.ExpiresInSeconds > DEFAULT_JWT_EXPIRATION_TIME {
+		params.ExpiresInSeconds = DEFAULT_JWT_EXPIRATION_TIME
 	}
 
 	dbUser, err := this.dbQueries.GetUser(r.Context(), params.Email)
@@ -129,18 +138,38 @@ func (this *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, dbUserToUser(dbUser))
+	token, err := auth.MakeJWT(dbUser.ID, this.jwtSecret, time.Duration(params.ExpiresInSeconds*int(time.Second)))
+
+	if err != nil {
+		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, dbUserToUser(dbUser, token))
 }
 
 func (this *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, this.jwtSecret)
+
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
 	type payload struct {
-		Body   string        `json:"body"`
-		UserID uuid.NullUUID `json:"user_id"`
+		Body string `json:"body"`
 	}
 
 	d := json.NewDecoder(r.Body)
 	params := payload{}
-	err := d.Decode(&params)
+	err = d.Decode(&params)
 
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, err.Error())
@@ -152,7 +181,7 @@ func (this *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dbChirp, err := this.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams{Body: cleanPhrase(params.Body), UserID: params.UserID})
+	dbChirp, err := this.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams{Body: cleanPhrase(params.Body), UserID: uuid.NullUUID{UUID: userID, Valid: true}})
 
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, err.Error())
@@ -209,7 +238,7 @@ func main() {
 
 	dbQueries := database.New(db)
 
-	config := apiConfig{dbQueries: dbQueries, platform: os.Getenv("PLATFORM")}
+	config := apiConfig{dbQueries: dbQueries, platform: os.Getenv("PLATFORM"), jwtSecret: os.Getenv("JWT_SECRET")}
 
 	mux := http.NewServeMux()
 	fs := http.FileServer(http.Dir("."))
@@ -268,12 +297,13 @@ func cleanPhrase(s string) string {
 	return strings.Join(res, " ")
 }
 
-func dbUserToUser(dbUser database.User) User {
+func dbUserToUser(dbUser database.User, token string) User {
 	return User{
 		ID:        dbUser.ID,
 		CreatedAt: dbUser.CreatedAt,
 		UpdatedAt: dbUser.UpdatedAt,
 		Email:     dbUser.Email,
+		Token:     token,
 	}
 }
 

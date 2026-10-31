@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -115,4 +116,29 @@ func TestCheckPasswordHash(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBearerToken(t *testing.T) {
+	t.Run("extracts valid token", func(t *testing.T) {
+		got, _ := GetBearerToken(http.Header{"Authorization": []string{"Bearer token"}})
+		want := "token"
+
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("returns an error if there is no Authorization header", func(t *testing.T) {
+		_, err := GetBearerToken(http.Header{})
+
+		if err == nil {
+			t.Errorf("Expected an error with invalid token")
+		}
+	})
+	t.Run("returns an error with empty Authorization header", func(t *testing.T) {
+		_, err := GetBearerToken(http.Header{"Authorization": []string{""}})
+
+		if err == nil {
+			t.Errorf("Expected an error with invalid token")
+		}
+	})
 }
