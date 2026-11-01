@@ -43,6 +43,7 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 	platform       string
 	jwtSecret      string
+	polkaKey       string
 }
 
 const DEFAULT_JWT_EXPIRATION_TIME = 3600
@@ -384,6 +385,16 @@ func (this *apiConfig) deleteChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (this *apiConfig) chirpiRedHook(w http.ResponseWriter, r *http.Request) {
+	apiKey, err := auth.GetAPIKey(r.Header)
+
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+	}
+
+	if strings.Compare(apiKey, this.polkaKey) != 0 {
+		respondWithError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
+	}
+
 	type payload struct {
 		Event string `json:"event"`
 		Data  struct {
@@ -393,7 +404,7 @@ func (this *apiConfig) chirpiRedHook(w http.ResponseWriter, r *http.Request) {
 
 	d := json.NewDecoder(r.Body)
 	params := payload{}
-	err := d.Decode(&params)
+	err = d.Decode(&params)
 
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, err.Error())
@@ -434,7 +445,7 @@ func main() {
 
 	dbQueries := database.New(db)
 
-	config := apiConfig{dbQueries: dbQueries, platform: os.Getenv("PLATFORM"), jwtSecret: os.Getenv("JWT_SECRET")}
+	config := apiConfig{dbQueries: dbQueries, platform: os.Getenv("PLATFORM"), jwtSecret: os.Getenv("JWT_SECRET"), polkaKey: os.Getenv("POLKA_KEY")}
 
 	mux := http.NewServeMux()
 	fs := http.FileServer(http.Dir("."))
