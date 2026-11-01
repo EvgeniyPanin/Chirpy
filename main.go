@@ -306,7 +306,9 @@ func (this *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (this *apiConfig) listChirps(w http.ResponseWriter, r *http.Request) {
-	authorIDParam := r.URL.Query().Get("author_id")
+	query := r.URL.Query()
+	authorIDParam := query.Get("author_id")
+	sort := query.Get("sort")
 
 	authorID := uuid.NullUUID{}
 
@@ -322,6 +324,12 @@ func (this *apiConfig) listChirps(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dbChirps, err := this.dbQueries.ListChirps(r.Context(), authorID)
+
+	if sort == "asc" {
+		slices.SortFunc(dbChirps, func(a, b database.Chirp) int {
+			return a.CreatedAt.Compare(b.CreatedAt)
+		})
+	}
 
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, err.Error())
