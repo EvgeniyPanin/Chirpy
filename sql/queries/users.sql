@@ -14,6 +14,11 @@ SET
 WHERE id = $1
 RETURNING *;
 
+-- name: UpdateUserChirpyRed :exec
+UPDATE users
+SET is_chirpy_red = $2
+WHERE id = $1;
+
 -- name: GetUser :one
 SELECT * FROM users
 WHERE email = $1 LIMIT 1;

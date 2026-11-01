@@ -25,6 +25,7 @@ type User struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	Email        string    `json:"email"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 	Token        string    `json:"token,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 }
@@ -382,6 +383,45 @@ func (this *apiConfig) deleteChirp(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusNoContent, map[string]string{})
 }
 
+func (this *apiConfig) chirpiRedHook(w http.ResponseWriter, r *http.Request) {
+	type payload struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID string `json:"user_id"`
+		} `json:"data"`
+	}
+
+	d := json.NewDecoder(r.Body)
+	params := payload{}
+	err := d.Decode(&params)
+
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if strings.Compare(params.Event, "user.upgraded") != 0 {
+		respondWithJSON(w, http.StatusNoContent, map[string]string{})
+		return
+	}
+
+	userId, err := uuid.Parse(params.Data.UserID)
+
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
+		return
+	}
+
+	err = this.dbQueries.UpdateUserChirpyRed(r.Context(), database.UpdateUserChirpyRedParams{ID: userId, IsChirpyRed: true})
+
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
+		return
+	}
+
+	respondWithJSON(w, http.StatusNoContent, map[string]string{})
+}
+
 func main() {
 	godotenv.Load()
 
@@ -420,6 +460,8 @@ func main() {
 
 	mux.Handle("GET /admin/metrics", http.HandlerFunc(config.handleMetrics))
 	mux.Handle("POST /admin/reset", http.HandlerFunc(config.reset))
+
+	mux.HandleFunc("POST /api/polka/webhooks", http.HandlerFunc(config.chirpiRedHook))
 
 	http.ListenAndServe(":8080", mux)
 }
@@ -463,6 +505,7 @@ func dbUserToUser(dbUser database.User, token string, refreshToken string) User 
 		CreatedAt:    dbUser.CreatedAt,
 		UpdatedAt:    dbUser.UpdatedAt,
 		Email:        dbUser.Email,
+		IsChirpyRed:  dbUser.IsChirpyRed,
 		Token:        token,
 		RefreshToken: refreshToken,
 	}
