@@ -113,6 +113,58 @@ func (this *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 
 	respondWithJSON(w, http.StatusCreated, dbUserToUser(dbUser, "", ""))
 }
+
+func (this *apiConfig) updateUser(w http.ResponseWriter, r *http.Request) {
+	type payload struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	d := json.NewDecoder(r.Body)
+	params := payload{}
+	decodingError := d.Decode(&params)
+
+	if decodingError != nil {
+		respondWithError(w, http.StatusBadRequest, "BadRequest")
+		return
+	}
+
+	if params.Email == "" || params.Password == "" {
+		respondWithError(w, http.StatusBadRequest, "Email and password are required")
+		return
+	}
+
+	token, tokenError := auth.GetBearerToken(r.Header)
+
+	if tokenError != nil {
+		respondWithError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, this.jwtSecret)
+
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(params.Password)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		return
+	}
+
+	patchedDbUser, err := this.dbQueries.PatchUser(r.Context(), database.PatchUserParams{ID: userID, Email: params.Email, HashedPassword: hashedPassword})
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, dbUserToUser(patchedDbUser, "", ""))
+}
+
 func (this *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 	type payload struct {
 		Email    string `json:"email"`
@@ -312,6 +364,7 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /api/users", http.HandlerFunc(config.createUser))
+	mux.HandleFunc("PUT /api/users", http.HandlerFunc(config.updateUser))
 	mux.HandleFunc("POST /api/login", http.HandlerFunc(config.login))
 	mux.HandleFunc("POST /api/refresh", http.HandlerFunc(config.refresh))
 	mux.HandleFunc("POST /api/revoke", http.HandlerFunc(config.revoke))
