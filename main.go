@@ -338,6 +338,50 @@ func (this *apiConfig) getChirp(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, dbChirpToChirp(dbChirp))
 }
 
+func (this *apiConfig) deleteChirp(w http.ResponseWriter, r *http.Request) {
+	chirpId, err := uuid.Parse(r.PathValue("chirpID"))
+
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
+		return
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, this.jwtSecret)
+
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
+		return
+	}
+
+	dbChirp, err := this.dbQueries.GetChirp(r.Context(), chirpId)
+
+	if dbChirp.UserID.UUID != userID {
+		respondWithError(w, http.StatusForbidden, http.StatusText(http.StatusForbidden))
+		return
+	}
+
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
+		return
+	}
+
+	err = this.dbQueries.DeleteChirp(r.Context(), chirpId)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		return
+	}
+
+	respondWithJSON(w, http.StatusNoContent, map[string]string{})
+}
+
 func main() {
 	godotenv.Load()
 
@@ -372,6 +416,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", http.HandlerFunc(config.postChirp))
 	mux.HandleFunc("GET /api/chirps", http.HandlerFunc(config.listChirps))
 	mux.HandleFunc("GET /api/chirps/{chirpID}", http.HandlerFunc(config.getChirp))
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", http.HandlerFunc(config.deleteChirp))
 
 	mux.Handle("GET /admin/metrics", http.HandlerFunc(config.handleMetrics))
 	mux.Handle("POST /admin/reset", http.HandlerFunc(config.reset))
