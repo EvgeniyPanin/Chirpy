@@ -306,7 +306,22 @@ func (this *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (this *apiConfig) listChirps(w http.ResponseWriter, r *http.Request) {
-	dbChirps, err := this.dbQueries.ListChirps(r.Context())
+	authorIDParam := r.URL.Query().Get("author_id")
+
+	authorID := uuid.NullUUID{}
+
+	if authorIDParam != "" {
+		parsedID, err := uuid.Parse(authorIDParam)
+
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "Invalid author_id")
+			return
+		}
+
+		authorID = uuid.NullUUID{UUID: parsedID, Valid: true}
+	}
+
+	dbChirps, err := this.dbQueries.ListChirps(r.Context(), authorID)
 
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, err.Error())

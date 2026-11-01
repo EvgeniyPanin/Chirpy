@@ -10,8 +10,12 @@ DELETE FROM chirps
 WHERE id = $1;
 
 -- name: ListChirps :many
-SELECT * FROM chirps
-ORDER BY created_at;
+SELECT *
+FROM chirps
+WHERE
+    (sqlc.narg('author_id')::uuid IS NULL
+        OR user_id = sqlc.narg('author_id'))
+ORDER BY created_at DESC;
 
 -- name: GetChirp :one
 SELECT * FROM chirps
